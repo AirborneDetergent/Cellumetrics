@@ -16,8 +16,8 @@ type Scene struct {
 	cellsIn        *[WIDTH][HEIGHT]Cell
 	cellsOut       *[WIDTH][HEIGHT]Cell
 	particles      [PARTICLE_COUNT]Particle
-	lightBufferIn  [WIDTH]FloatColor
-	lightBufferOut [WIDTH]FloatColor
+	lightBufferIn  *[WIDTH]FloatColor
+	lightBufferOut *[WIDTH]FloatColor
 }
 
 func newScene() *Scene {
@@ -25,6 +25,8 @@ func newScene() *Scene {
 	s.frameBuffer = make([]byte, WIDTH*HEIGHT*4)
 	s.cellsIn = &[WIDTH][HEIGHT]Cell{}
 	s.cellsOut = &[WIDTH][HEIGHT]Cell{}
+	s.lightBufferIn = &[WIDTH]FloatColor{}
+	s.lightBufferOut = &[WIDTH]FloatColor{}
 	for i := range s.particles {
 		p := &s.particles[i]
 		p.x = rand.Float64() * WIDTH
@@ -103,11 +105,16 @@ func (s *Scene) diffusion(x, y int) {
 
 func (s *Scene) simStep() {
 	if ebiten.IsMouseButtonPressed(ebiten.MouseButtonLeft) {
-		mouseX, mouseY := ebiten.CursorPosition()
-		if !boundsCheck(mouseX, mouseY) {
-			return
+		for i := 0; i < 100; i++ {
+			mouseX, mouseY := ebiten.CursorPosition()
+			mouseX += rand.Intn(32) - 16
+			mouseY += rand.Intn(32) - 16
+			if !boundsCheck(mouseX, mouseY) {
+				return
+			}
+			s.cellsIn[mouseX][mouseY].charge += 0.1
 		}
-		s.cellsIn[mouseX][mouseY].charge += 10
+
 	}
 
 	s.perCellThreaded(s.diffusion)
@@ -184,37 +191,56 @@ func gammaCorrect(n float64) float64 {
 	return n * n
 }
 
-func (s *Scene) drawFog(offset int, wg *sync.WaitGroup) {
-	for x := offset; x < WIDTH; x += THREADS {
-		lightR, lightG, lightB := 50.0, 50.0, 50.0
-		for y := 0; y < HEIGHT; y++ {
+func (s *Scene) drawFog() {
+	for i := range s.lightBufferIn {
+		s.lightBufferIn[i] = FloatColor{50, 50, 50}
+	}
+	for y := 0; y < HEIGHT; y++ {
+		for x := 0; x < WIDTH; x++ {
+			light := &s.lightBufferIn[x]
 			index := (x + y*WIDTH) * 4
 			fog := &s.fogBuffer[x][y]
-			r := min(1, fog.r*lightR*fog.hitRate+lightR*0.01)
-			g := min(1, fog.g*lightG*fog.hitRate+lightG*0.01)
-			b := min(1, fog.b*lightB*fog.hitRate+lightB*0.01)
+			r := min(1, fog.r*light.r*fog.hitRate+light.r*0.01)
+			g := min(1, fog.g*light.g*fog.hitRate+light.g*0.01)
+			b := min(1, fog.b*light.b*fog.hitRate+light.b*0.01)
 			oppDen := 1 - fog.hitRate
-			lightR *= oppDen
-			lightG *= oppDen
-			lightB *= oppDen
+			light.r *= oppDen
+			light.g *= oppDen
+			light.b *= oppDen
 			s.frameBuffer[index] = byte(gammaCorrect(r) * 255)
 			s.frameBuffer[index+1] = byte(gammaCorrect(g) * 255)
 			s.frameBuffer[index+2] = byte(gammaCorrect(b) * 255)
 			s.frameBuffer[index+3] = 255
 		}
+		for x := 0; x < WIDTH; x++ {
+			count := 0.0
+			s.lightBufferOut[x] = FloatColor{0, 0, 0}
+			for sx := max(0, x-1); sx <= min(WIDTH-1, x+1); sx++ {
+				s.lightBufferOut[x].r += s.lightBufferIn[sx].r
+				s.lightBufferOut[x].g += s.lightBufferIn[sx].g
+				s.lightBufferOut[x].b += s.lightBufferIn[sx].b
+				count++
+			}
+			s.lightBufferOut[x].r /= count
+			s.lightBufferOut[x].g /= count
+			s.lightBufferOut[x].b /= count
+		}
+		tmp := s.lightBufferIn
+		s.lightBufferIn = s.lightBufferOut
+		s.lightBufferOut = tmp
 	}
-	wg.Done()
 }
 
 func (s *Scene) render(screen *ebiten.Image) {
 	s.perCellThreaded(s.calcFog)
 
-	wg := sync.WaitGroup{}
-	wg.Add(THREADS)
-	for i := 0; i < THREADS; i++ {
-		go s.drawFog(i, &wg)
-	}
-	wg.Wait()
+	//wg := sync.WaitGroup{}
+	//wg.Add(THREADS)
+	//for i := 0; i < THREADS; i++ {
+	//	go s.drawFog(i, &wg)
+	//}
+	//wg.Wait()
+	s.drawFog()
 
 	if DRAW_PARTICLES {
 		for _, part := range s.particles {

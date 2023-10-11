@@ -20,7 +20,7 @@ const (
 	THREADS             = 8
 	GRAVITY             = 0 / 144.0
 	CENTER_GRAVITY      = 0.1 / 144.0
-	MAX_CHARGE_RENDERED = 100
+	MAX_CHARGE_RENDERED = 65
 	NEGATIVE_RATE       = 0.5
 	PALETTE_SIZE        = 10000
 )
