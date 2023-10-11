@@ -2,6 +2,7 @@ package main
 
 import "time"
 
+// Really basic utility to help with benchmarking stuff
 type Timer struct {
 	startTime float64
 }
@@ -17,6 +18,7 @@ func (t *Timer) start() {
 	t.startTime = curTime()
 }
 
+// Returns the elapsed time, but also resets the timer
 //lint:ignore U1000 for debugging
 func (t *Timer) tick() float64 {
 	curTime := curTime()

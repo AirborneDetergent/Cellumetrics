@@ -11,11 +11,13 @@ import (
 )
 
 type Scene struct {
+	// Raw data sent to the GPU
 	frameBuffer    []byte
 	fogBuffer      [WIDTH][HEIGHT]FogCell
-	cellsIn        *[WIDTH][HEIGHT]Cell
-	cellsOut       *[WIDTH][HEIGHT]Cell
+	colorDiffusers [3]Diffuser
+	chargeDiffuser Diffuser
 	particles      [PARTICLE_COUNT]Particle
+	// We need a swap buffer for light ray blending
 	lightBufferIn  *[WIDTH]FloatColor
 	lightBufferOut *[WIDTH]FloatColor
 }
@@ -23,10 +25,14 @@ type Scene struct {
 func newScene() *Scene {
 	s := &Scene{}
 	s.frameBuffer = make([]byte, WIDTH*HEIGHT*4)
-	s.cellsIn = &[WIDTH][HEIGHT]Cell{}
-	s.cellsOut = &[WIDTH][HEIGHT]Cell{}
+	s.chargeDiffuser = newDiffuser()
+	for i := range s.colorDiffusers {
+		s.colorDiffusers[i] = newDiffuser()
+	}
 	s.lightBufferIn = &[WIDTH]FloatColor{}
 	s.lightBufferOut = &[WIDTH]FloatColor{}
+	// Particles are initialized with random positions
+	// and randomly signed charges
 	for i := range s.particles {
 		p := &s.particles[i]
 		p.x = rand.Float64() * WIDTH
@@ -36,10 +42,13 @@ func newScene() *Scene {
 		} else {
 			p.charge = 1
 		}
+		p.r, p.g, p.b = getColor(rand.Float64())
 	}
 	return s
 }
 
+// Prioritizes displaying every frame over
+// running at a consistent speed, so this is unused
 func (s *Scene) Update() error {
 	return nil
 }
@@ -48,6 +57,7 @@ func (s *Scene) Draw(screen *ebiten.Image) {
 	debugInfo := ""
 	timer := makeTimer()
 	s.simStep()
+	// Exponential moving average so the number isn't super spazzy and useless
 	simTime = simTime*0.9 + timer.tick()*0.1
 	s.render(screen)
 	renderTime = renderTime*0.9 + timer.tick()*0.1
@@ -59,71 +69,73 @@ func (s *Scene) Draw(screen *ebiten.Image) {
 
 func (s *Scene) readChargeBounded(x, y int) float64 {
 	if boundsCheck(x, y) {
-		return s.cellsIn[x][y].charge
+		return s.chargeDiffuser.cellsIn[x][y].value
 	}
 	return 0.0
 }
 
+// Estimates the derivative of the charge at (x, y)
 func (s *Scene) approxDeriv(x, y int) (dx, dy float64) {
 	dx = s.readChargeBounded(x+1, y) - s.readChargeBounded(x-1, y)
 	dy = s.readChargeBounded(x, y+1) - s.readChargeBounded(x, y-1)
 	return dx, dy
 }
 
-func (s *Scene) perCellThreaded(fun func(int, int)) {
+// Calls a function with the x and y positions of every cell
+// in parallel
+func (s *Scene) perCellThreaded(funs ...func(int, int)) {
 	wg := sync.WaitGroup{}
 	wg.Add(THREADS)
 	for i := 0; i < THREADS; i++ {
-		go s.perCellThreadedHelper(fun, i, &wg)
+		go s.perCellThreadedHelper(i, &wg, funs)
 	}
 	wg.Wait()
 }
 
-func (s *Scene) perCellThreadedHelper(fun func(int, int), offset int, wg *sync.WaitGroup) {
+func (s *Scene) perCellThreadedHelper(offset int, wg *sync.WaitGroup, funs []func(int, int)) {
 	for x := offset; x < WIDTH; x += THREADS {
-		for y := range s.cellsIn[0] {
-			fun(x, y)
+		for y := 0; y < HEIGHT; y++ {
+			for _, fun := range funs {
+				fun(x, y)
+			}
 		}
 	}
 	wg.Done()
 }
 
-func (s *Scene) diffusion(x, y int) {
-	s.cellsOut[x][y].charge = 0
-	count := 0
-	for sx := x - 1; sx <= x+1; sx++ {
-		for sy := y - 1; sy <= y+1; sy++ {
-			if sx >= 0 && sx < WIDTH && sy >= 0 && sy < HEIGHT {
-				count++
-				s.cellsOut[x][y].charge += s.cellsIn[sx][sy].charge
-			}
-		}
-	}
-	s.cellsOut[x][y].charge /= float64(count)
-	s.cellsOut[x][y].charge *= 0.999
-}
-
 func (s *Scene) simStep() {
+	// Add charge to random locations around the mouse when clicking
 	if ebiten.IsMouseButtonPressed(ebiten.MouseButtonLeft) {
 		for i := 0; i < 100; i++ {
 			mouseX, mouseY := ebiten.CursorPosition()
 			mouseX += rand.Intn(32) - 16
 			mouseY += rand.Intn(32) - 16
 			if !boundsCheck(mouseX, mouseY) {
-				return
+				continue
 			}
-			s.cellsIn[mouseX][mouseY].charge += 0.1
+			s.chargeDiffuser.cellsIn[mouseX][mouseY].value += 0.1
 		}
 
 	}
 
-	s.perCellThreaded(s.diffusion)
+	s.perCellThreaded(s.chargeDiffuser.diffusion,
+		s.colorDiffusers[0].diffusion,
+		s.colorDiffusers[1].diffusion,
+		s.colorDiffusers[2].diffusion)
 
+	// Simulate particle movement. Particles never interact directly
+	// and can only affect each other through the cellular simulation,
+	// so a swap buffer is not needed.
 	for i := range s.particles {
 		p := &s.particles[i]
+		// Negatively charged particles will accelerate with the derivative
+		// of the charge field at their current position, while positively
+		// charged particles will accelerate in the opposite direction
 		dx, dy := s.approxDeriv(int(p.x), int(p.y))
 		p.xv -= dx / 144 * p.charge
 		p.yv -= dy / 144 * p.charge
+		// Gravity is applied as constant forces both downwards and
+		// towards the center of the screen
 		p.yv += GRAVITY
 		if CENTER_GRAVITY > 0 {
 			difX := p.x - WIDTH/2
@@ -134,10 +146,13 @@ func (s *Scene) simStep() {
 			p.xv -= difX / length * CENTER_GRAVITY * modifier
 			p.yv -= difY / length * CENTER_GRAVITY * modifier
 		}
+		// This system doesn't exactly preserve energy, so this
+		// exponential decay is necessary to prevent things from going crazy
 		p.xv *= 0.995
 		p.yv *= 0.995
 		p.x += p.xv
 		p.y += p.yv
+		// Keep particles inside the window
 		if p.x < 1 {
 			p.x = 1
 			p.xv = math.Max(0, p.xv)
@@ -155,42 +170,57 @@ func (s *Scene) simStep() {
 			p.yv = math.Min(0, p.yv)
 		}
 	}
-
+	// Positive and negative particles increase and decrease the charge of
+	// the cell they're on respectively
 	for i := range s.particles {
 		p := &s.particles[i]
 		if boundsCheck(int(p.x), int(p.y)) {
-			s.cellsOut[int(p.x)][int(p.y)].charge += EMISSION_STRENGTH * p.charge
+			s.chargeDiffuser.cellsOut[int(p.x)][int(p.y)].value += EMISSION_STRENGTH * p.charge
 		}
 	}
-
-	tmp := s.cellsIn
-	s.cellsIn = s.cellsOut
-	s.cellsOut = tmp
+	s.chargeDiffuser.swapBuffers()
+	s.colorDiffusers[0].swapBuffers()
+	s.colorDiffusers[1].swapBuffers()
+	s.colorDiffusers[2].swapBuffers()
 }
 
 func (s *Scene) Layout(outsideWidth, outsideHeight int) (screenWidth, screenHeight int) {
 	return WIDTH, HEIGHT
 }
 
+// Turn the cell charge values into colored fog
 func (s *Scene) calcFog(x, y int) {
-	cell := &s.cellsIn[x][y]
-	charge := cell.charge / MAX_CHARGE_RENDERED
+	cell := &s.chargeDiffuser.cellsIn[x][y]
+	redCell := &s.colorDiffusers[0].cellsIn[x][y]
+	greenCell := &s.colorDiffusers[1].cellsIn[x][y]
+	blueCell := &s.colorDiffusers[2].cellsIn[x][y]
+	charge := cell.value / CHARGE_DIVISOR
 	fog := FogCell{}
-	fog.r, fog.g, fog.b = getColor(charge * 10)
+	//fog.r, fog.g, fog.b = getColor(signedSmoothClamp(charge * 10))
+	fog.r, fog.g, fog.b = redCell.value, greenCell.value, blueCell.value
 	fog.hitRate = 1 - math.Pow(0.5, math.Abs(charge))
 	s.fogBuffer[x][y] = fog
 }
 
-// Muh CPU can't handle 2.2
+// Muh CPU can't handle 2.2. Rendering does more work now,
+// but when I implemented this, it made the entire step >3x slower.
 func gammaCorrect(n float64) float64 {
 	return n * n
 }
 
+// Renders the fog computed in calcFog() to the screen with volumetrics.
+// One ray of light is cast down from each column of pixels on the screen.
+// This can't be multithreaded because every time the rays move a step down,
+// their light values are also blended with their neighbors' light values.
 func (s *Scene) drawFog() {
+	// Initialize all the rays
 	for i := range s.lightBufferIn {
-		s.lightBufferIn[i] = FloatColor{50, 50, 50}
+		s.lightBufferIn[i] = FloatColor{INIT_RAY_LUMA, INIT_RAY_LUMA, INIT_RAY_LUMA}
 	}
 	for y := 0; y < HEIGHT; y++ {
+		// Figure out how the light should mix with the current row's
+		// fog cells and draw the colors on the screen while also
+		// letting the fog absorb some of the light.
 		for x := 0; x < WIDTH; x++ {
 			light := &s.lightBufferIn[x]
 			index := (x + y*WIDTH) * 4
@@ -207,9 +237,11 @@ func (s *Scene) drawFog() {
 			s.frameBuffer[index+2] = byte(gammaCorrect(b) * 255)
 			s.frameBuffer[index+3] = 255
 		}
+		// The light values get blended/blurred with a basic 1D
+		// 1 radus box blur every step so it looks more natural
 		for x := 0; x < WIDTH; x++ {
-			count := 0.0
 			s.lightBufferOut[x] = FloatColor{0, 0, 0}
+			count := 0.0
 			for sx := max(0, x-1); sx <= min(WIDTH-1, x+1); sx++ {
 				s.lightBufferOut[x].r += s.lightBufferIn[sx].r
 				s.lightBufferOut[x].g += s.lightBufferIn[sx].g
@@ -220,6 +252,8 @@ func (s *Scene) drawFog() {
 			s.lightBufferOut[x].g /= count
 			s.lightBufferOut[x].b /= count
 		}
+		// The box blurring can't really be done in-place, so we
+		// need two buffers to go back and forth between
 		tmp := s.lightBufferIn
 		s.lightBufferIn = s.lightBufferOut
 		s.lightBufferOut = tmp
@@ -228,15 +262,10 @@ func (s *Scene) drawFog() {
 
 func (s *Scene) render(screen *ebiten.Image) {
 	s.perCellThreaded(s.calcFog)
-
-	//wg := sync.WaitGroup{}
-	//wg.Add(THREADS)
-	//for i := 0; i < THREADS; i++ {
-	//	go s.drawFog(i, &wg)
-	//}
-	//wg.Wait()
 	s.drawFog()
 
+	// Particles are just drawn as single red or blue pixels alpha-blended
+	// onto the final image before it's written to the GPU
 	if DRAW_PARTICLES {
 		for _, part := range s.particles {
 			if !boundsCheck(int(part.x), int(part.y)) {
