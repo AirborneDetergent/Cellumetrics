@@ -7,12 +7,8 @@ require (
 	github.com/hajimehoshi/ebiten/v2 v2.6.1
 )
 
-require github.com/go-gl/glfw/v3.3/glfw v0.0.0-20200707082815-5321531c36a2 // indirect
-
 require (
-	github.com/bradhe/stopwatch v0.0.0-20190618212248-a58cccc508ea // indirect
 	github.com/ebitengine/purego v0.5.0 // indirect
-	github.com/hajimehoshi/ebiten v1.12.12
 	github.com/jezek/xgb v1.1.0 // indirect
 	golang.org/x/exp/shiny v0.0.0-20230817173708-d852ddb80c63 // indirect
 	golang.org/x/image v0.12.0 // indirect

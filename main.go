@@ -22,7 +22,7 @@ const (
 	CENTER_GRAVITY      = 0.1 / 144.0
 	MAX_CHARGE_RENDERED = 65
 	NEGATIVE_RATE       = 0.5
-	PALETTE_SIZE        = 10000
+	PALETTE_SIZE        = 1000
 )
 
 var (
@@ -61,15 +61,18 @@ func boundsCheck(x, y int) bool {
 func genColorTable() {
 	for i := range colorTable {
 		charge := float64(i) / PALETTE_SIZE
-		hue := math.Mod(charge*360*50, 360)
+		hue := math.Mod(charge*360, 360)
 		r, g, b, _ := colorconv.HSVToRGB(hue, 1, 1)
 		colorTable[i] = FloatColor{float64(r) / 255, float64(g) / 255, float64(b) / 255}
 	}
 }
 
 func getColor(charge float64) (r, g, b float64) {
-	charge = min(1, math.Abs(charge))
-	c := &colorTable[int(charge*PALETTE_SIZE)]
+	place := min(1, math.Abs(charge))
+	if charge < 0 {
+		place = 1 - place
+	}
+	c := &colorTable[int(place*(PALETTE_SIZE-1))]
 	return c.r, c.g, c.b
 }
 

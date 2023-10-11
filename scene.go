@@ -176,13 +176,8 @@ func (s *Scene) calcFog(x, y int) {
 	cell := &s.cellsIn[x][y]
 	charge := cell.charge / MAX_CHARGE_RENDERED
 	fog := FogCell{}
-	//fog.r, fog.g, fog.b = getColor(charge)
+	fog.r, fog.g, fog.b = getColor(charge * 10)
 	fog.hitRate = 1 - math.Pow(0.5, math.Abs(charge))
-	if charge < 0 {
-		fog.r = 1
-	} else {
-		fog.b = 1
-	}
 	s.fogBuffer[x][y] = fog
 }
 
@@ -204,9 +199,9 @@ func (s *Scene) drawFog() {
 			g := min(1, fog.g*light.g*fog.hitRate+light.g*0.01)
 			b := min(1, fog.b*light.b*fog.hitRate+light.b*0.01)
 			oppDen := 1 - fog.hitRate
-			light.r *= oppDen
-			light.g *= oppDen
-			light.b *= oppDen
+			light.r *= oppDen * (1 - fog.hitRate + fog.r*fog.hitRate)
+			light.g *= oppDen * (1 - fog.hitRate + fog.g*fog.hitRate)
+			light.b *= oppDen * (1 - fog.hitRate + fog.b*fog.hitRate)
 			s.frameBuffer[index] = byte(gammaCorrect(r) * 255)
 			s.frameBuffer[index+1] = byte(gammaCorrect(g) * 255)
 			s.frameBuffer[index+2] = byte(gammaCorrect(b) * 255)
