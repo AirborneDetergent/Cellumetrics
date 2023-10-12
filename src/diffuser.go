@@ -1,15 +1,28 @@
 package main
 
+import "math"
+
 type Diffuser struct {
 	// The simulation is not in-place, so we need a swap buffer
-	cellsIn  *[WIDTH][HEIGHT]Cell
-	cellsOut *[WIDTH][HEIGHT]Cell
+	cellsIn   *[WIDTH][HEIGHT]Cell
+	cellsOut  *[WIDTH][HEIGHT]Cell
+	kernel    [9]float64
+	decayCoef float64
 }
 
-func newDiffuser() Diffuser {
+// Retainment describes how much stuff stays in its cell
+// each iteration instead of diffusing to each neighbor.
+// Decay describes how quickly exponential decay occurs.
+func newDiffuser(retainment, decay float64) Diffuser {
 	d := Diffuser{}
 	d.cellsIn = &[WIDTH][HEIGHT]Cell{}
 	d.cellsOut = &[WIDTH][HEIGHT]Cell{}
+	d.kernel = [9]float64{
+		1, 1, 1,
+		1, retainment, 1,
+		1, 1, 1,
+	}
+	d.decayCoef = math.Pow(0.999, decay)
 	return d
 }
 
@@ -18,17 +31,20 @@ func newDiffuser() Diffuser {
 // going up or down forever.
 func (d *Diffuser) diffusion(x, y int) {
 	d.cellsOut[x][y].value = 0
-	count := 0
+	sum := 0.0
+	index := 0
 	for sx := x - 1; sx <= x+1; sx++ {
 		for sy := y - 1; sy <= y+1; sy++ {
-			if sx >= 0 && sx < WIDTH && sy >= 0 && sy < HEIGHT {
-				count++
-				d.cellsOut[x][y].value += d.cellsIn[sx][sy].value
+			if boundsCheck(sx, sy) {
+				kv := d.kernel[index]
+				d.cellsOut[x][y].value += d.cellsIn[sx][sy].value * kv
+				sum += kv
+				index++
 			}
 		}
 	}
-	d.cellsOut[x][y].value /= float64(count)
-	d.cellsOut[x][y].value *= 0.999
+	d.cellsOut[x][y].value /= sum
+	d.cellsOut[x][y].value *= d.decayCoef
 }
 
 func (d *Diffuser) swapBuffers() {

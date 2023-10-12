@@ -4,8 +4,8 @@ import (
 	"log"
 	"math"
 
-	"github.com/crazy3lf/colorconv"
 	"github.com/hajimehoshi/ebiten/v2"
+	"github.com/lucasb-eyer/go-colorful"
 )
 
 const (
@@ -17,10 +17,18 @@ const (
 	HEIGHT = 256
 	// Makes the window bigger because the simulation is kinda small
 	SCALE          = 4
-	PARTICLE_COUNT = 6000
-	// How much charge (and also fog, but this affects the simulation)
-	// each particle should produce
-	EMISSION_STRENGTH = 15 / 144.0
+	PARTICLE_COUNT = 10000
+	// What portion of particles should be negatively charged
+	NEGATIVE_RATE = 0.5
+	// What portion of particles should be exceptionally bright
+	BRIGHT_RATE = 0.0
+	// How much brighter to make bright particles
+	STR_BOOST = 10
+	// How much charge each particle should produce
+	CHARGE_STRENGTH = 8 / 144.0
+	// How much colored fog each particle should produce.
+	// Only seems to make a small difference.
+	EMISSION_STRENGTH = 10 / 144.0
 	THREADS           = 8
 	// Allows both gravity that pulls particles towards the center and
 	// gravity that pulls particles down. They can't exit the window.
@@ -28,13 +36,11 @@ const (
 	CENTER_GRAVITY = 0.1 / 144.0
 	// Only affects rendering. Will affect the overall density of the fog
 	// and colors chosen based on density
-	CHARGE_DIVISOR = 50
-	// What portion of particles should be negatively charged
-	NEGATIVE_RATE = 0.5
+	CHARGE_DIVISOR = 65
 	// Uses a precomputed HSV hue wheel because it can be slow
 	PALETTE_SIZE = 1000
 	// Brightness
-	INIT_RAY_LUMA = 75
+	INIT_RAY_LUMA = 70
 )
 
 var (
@@ -55,6 +61,7 @@ type Cell struct {
 // particles emit as well as how they move
 type Particle struct {
 	x, y, xv, yv, charge, r, g, b float64
+	isBright                      bool
 }
 
 // hitRate is meant to describe, on average, how much
@@ -62,6 +69,16 @@ type Particle struct {
 // passing through that cell. [0, 1)
 type FogCell struct {
 	r, g, b, hitRate float64
+}
+
+func main() {
+	genColorTable()
+	scene := newScene()
+	ebiten.SetWindowSize(WIDTH*SCALE, HEIGHT*SCALE)
+	ebiten.SetWindowTitle("Simulation")
+	if err := ebiten.RunGame(scene); err != nil {
+		log.Fatal(err)
+	}
 }
 
 func boundsCheck(x, y int) bool {
@@ -72,8 +89,8 @@ func genColorTable() {
 	for i := range colorTable {
 		charge := float64(i) / PALETTE_SIZE
 		hue := math.Mod(charge*360, 360)
-		r, g, b, _ := colorconv.HSVToRGB(hue, 1, 1)
-		colorTable[i] = FloatColor{float64(r) / 255, float64(g) / 255, float64(b) / 255}
+		col := colorful.Hsv(hue, 1, 1)
+		colorTable[i] = FloatColor{col.R, col.G, col.B}
 	}
 }
 
@@ -89,19 +106,20 @@ func getColor(charge float64) (r, g, b float64) {
 	return c.r, c.g, c.b
 }
 
-func main() {
-	genColorTable()
-	scene := newScene()
-	ebiten.SetWindowSize(WIDTH*SCALE, HEIGHT*SCALE)
-	ebiten.SetWindowTitle("Simulation")
-	if err := ebiten.RunGame(scene); err != nil {
-		log.Fatal(err)
-	}
+// Muh CPU can't handle 2.2. Rendering does more work now,
+// but when I implemented this, it made the entire step >3x slower.
+func gammaCorrect(n float64) float64 {
+	return n * n
 }
 
-func signedSmoothClamp(x float64) float64 {
-	if x == 0 {
-		return 0
+// This is very slow, but I'm not sure how to speed it up
+func saturate(r, g, b, amt float64) (float64, float64, float64) {
+	col := colorful.Color{R: r, G: g, B: b}
+	h, s, v := col.Hsv()
+	if s != 0 {
+		s = min(1, s*amt)
 	}
-	return math.Copysign(1-1.0/(math.Abs(x)+1), x)
+	v = (v-0.5)/amt + 0.5
+	col = colorful.Hsv(h, s, v)
+	return col.R, col.G, col.B
 }

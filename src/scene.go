@@ -7,7 +7,6 @@ import (
 	"sync"
 
 	"github.com/hajimehoshi/ebiten/v2"
-	"github.com/hajimehoshi/ebiten/v2/ebitenutil"
 )
 
 type Scene struct {
@@ -25,9 +24,9 @@ type Scene struct {
 func newScene() *Scene {
 	s := &Scene{}
 	s.frameBuffer = make([]byte, WIDTH*HEIGHT*4)
-	s.chargeDiffuser = newDiffuser()
+	s.chargeDiffuser = newDiffuser(1, 1)
 	for i := range s.colorDiffusers {
-		s.colorDiffusers[i] = newDiffuser()
+		s.colorDiffusers[i] = newDiffuser(1, 10)
 	}
 	s.lightBufferIn = &[WIDTH]FloatColor{}
 	s.lightBufferOut = &[WIDTH]FloatColor{}
@@ -39,10 +38,13 @@ func newScene() *Scene {
 		p.y = rand.Float64() * HEIGHT
 		if rand.Float64() < NEGATIVE_RATE {
 			p.charge = -1
+			p.r, p.g, p.b = getColor(rand.Float64()*0.15 - 0.075 + 0.1)
 		} else {
 			p.charge = 1
+			p.r, p.g, p.b = getColor(rand.Float64()*0.15 - 0.075 + 0.6)
 		}
-		p.r, p.g, p.b = getColor(rand.Float64())
+		p.isBright = rand.Float64() < BRIGHT_RATE
+
 	}
 	return s
 }
@@ -64,7 +66,7 @@ func (s *Scene) Draw(screen *ebiten.Image) {
 	debugInfo += fmt.Sprintf("FPS: %0.4g\n", ebiten.ActualFPS())
 	debugInfo += fmt.Sprintf("Simulation time: %0.3f\n", simTime)
 	debugInfo += fmt.Sprintf("Render time: %0.3f\n", renderTime)
-	ebitenutil.DebugPrint(screen, debugInfo)
+	//ebitenutil.DebugPrint(screen, debugInfo)
 }
 
 func (s *Scene) readChargeBounded(x, y int) float64 {
@@ -171,11 +173,19 @@ func (s *Scene) simStep() {
 		}
 	}
 	// Positive and negative particles increase and decrease the charge of
-	// the cell they're on respectively
+	// the cell they're on respectively. They also all add to the color diffusers' cells.
 	for i := range s.particles {
 		p := &s.particles[i]
-		if boundsCheck(int(p.x), int(p.y)) {
-			s.chargeDiffuser.cellsOut[int(p.x)][int(p.y)].value += EMISSION_STRENGTH * p.charge
+		ix, iy := int(p.x), int(p.y)
+		if boundsCheck(ix, iy) {
+			coef := 1.0
+			if p.isBright {
+				coef = STR_BOOST
+			}
+			s.chargeDiffuser.cellsOut[ix][iy].value += CHARGE_STRENGTH * p.charge * coef
+			s.colorDiffusers[0].cellsOut[ix][iy].value += EMISSION_STRENGTH * p.r * coef
+			s.colorDiffusers[1].cellsOut[ix][iy].value += EMISSION_STRENGTH * p.g * coef
+			s.colorDiffusers[2].cellsOut[ix][iy].value += EMISSION_STRENGTH * p.b * coef
 		}
 	}
 	s.chargeDiffuser.swapBuffers()
@@ -196,16 +206,17 @@ func (s *Scene) calcFog(x, y int) {
 	blueCell := &s.colorDiffusers[2].cellsIn[x][y]
 	charge := cell.value / CHARGE_DIVISOR
 	fog := FogCell{}
-	//fog.r, fog.g, fog.b = getColor(signedSmoothClamp(charge * 10))
 	fog.r, fog.g, fog.b = redCell.value, greenCell.value, blueCell.value
+	fog.r, fog.g, fog.b = saturate(fog.r, fog.g, fog.b, 2.)
+	mag := math.Sqrt(fog.r*fog.r + fog.g*fog.g + fog.b*fog.b)
+	if mag > 0 {
+		fog.r /= mag
+		fog.g /= mag
+		fog.b /= mag
+
+	}
 	fog.hitRate = 1 - math.Pow(0.5, math.Abs(charge))
 	s.fogBuffer[x][y] = fog
-}
-
-// Muh CPU can't handle 2.2. Rendering does more work now,
-// but when I implemented this, it made the entire step >3x slower.
-func gammaCorrect(n float64) float64 {
-	return n * n
 }
 
 // Renders the fog computed in calcFog() to the screen with volumetrics.
